@@ -10,88 +10,260 @@ use std::env;
 use std::time::Instant;
 
 fn main() {
-    println!("============================================================");
-    println!(" fgrain: Physically based film grain simulation engine");
-    println!("============================================================");
-
     let args: Vec<String> = env::args().collect();
-    let mode = args.get(1).map(|s| s.as_str()).unwrap_or("gradient");
+    if let Err(err) = run_cli(&args) {
+        eprintln!("error: {err}");
+        std::process::exit(1);
+    }
+}
 
-    match mode {
-        "apply" | "image" => run_image_apply(&args[2..]),
-        "tri-x" => run_preset_demo("tri-x"),
-        "t-max" => run_preset_demo("t-max"),
-        "halation" => run_halation_demo(),
-        _ => {
-            let lower = mode.to_lowercase();
-            if lower.ends_with(".png")
-                || lower.ends_with(".jpg")
-                || lower.ends_with(".jpeg")
-                || lower.ends_with(".webp")
-            {
-                run_image_apply(&args[1..]);
+/// Routes CLI arguments to the appropriate command handler.
+pub fn run_cli(args: &[String]) -> Result<(), String> {
+    if args.len() <= 1 {
+        print_main_help();
+        return Ok(());
+    }
+
+    let first = &args[1];
+    match first.as_str() {
+        "-h" | "--help" => {
+            if args.len() > 2 {
+                match args[2].as_str() {
+                    "apply" | "image" => print_apply_help(),
+                    "gradient" => print_gradient_help(),
+                    "tri-x" => print_tri_x_help(),
+                    "t-max" => print_t_max_help(),
+                    "halation" => print_halation_help(),
+                    "demo" => print_demo_help(),
+                    _ => print_main_help(),
+                }
             } else {
-                run_gradient_demo();
+                print_main_help();
+            }
+            Ok(())
+        }
+        "help" => {
+            if args.len() > 2 {
+                match args[2].as_str() {
+                    "apply" | "image" => print_apply_help(),
+                    "gradient" => print_gradient_help(),
+                    "tri-x" => print_tri_x_help(),
+                    "t-max" => print_t_max_help(),
+                    "halation" => print_halation_help(),
+                    "demo" => print_demo_help(),
+                    other => {
+                        return Err(format!(
+                            "unknown help topic '{other}'. For a list of commands, try 'fgrain --help'."
+                        ));
+                    }
+                }
+            } else {
+                print_main_help();
+            }
+            Ok(())
+        }
+        "apply" | "image" => run_image_apply(&args[2..]),
+        "gradient" => run_gradient_demo_cli(&args[2..]),
+        "tri-x" => run_preset_demo_cli("tri-x", &args[2..]),
+        "t-max" => run_preset_demo_cli("t-max", &args[2..]),
+        "halation" => run_halation_demo_cli(&args[2..]),
+        "demo" => run_demo_cli(&args[2..]),
+        other => {
+            if is_image_file(other) {
+                run_image_apply(&args[1..])
+            } else if other.starts_with('-') {
+                Err(format!(
+                    "unrecognized option '{other}'. For more information, try '--help'."
+                ))
+            } else {
+                Err(format!(
+                    "unrecognized command '{other}'. For more information, try '--help'."
+                ))
             }
         }
     }
 }
 
-/// Applies the physically based film grain simulation to an arbitrary input image file
-/// (supports PNG, JPEG, WebP).
-///
-/// Usage:
-///   fgrain apply <input.png|jpg|webp> [output.png|jpg|webp] [--preset tri-x|t-max|hp5] [--color] [--exposure 1.0] [--grain-size 2.5] [--grain-strength 0.28] [--width 512] [--height 512]
-fn run_image_apply(args: &[String]) {
-    if args.is_empty() {
-        println!("\nUsage: fgrain apply <input_image> [output_image] [options]");
-        println!("Supported formats: PNG, JPEG, WebP (.png, .jpg, .jpeg, .webp)");
-        println!("Options:");
-        println!(
-            "  --preset <tri-x|tri-x-1600|caffenol|t-max|hp5> Film emulsion stock (default: tri-x)"
-        );
-        println!("  --format <35mm|120|4x5>      Negative format scaling (default: 35mm)");
-        println!(
-            "  --push <0..3>                Push processing stops (default: 0.0, or 2.0 for tri-x-1600/caffenol)"
-        );
-        println!(
-            "  --eberhard <float>           Eberhard / Mackie line acutance halo strength (default: 1.0)"
-        );
-        println!(
-            "  --no-scanner-otf             Disable optical scanner lens MTF aperture simulation"
-        );
-        println!("  --color                      Simulate color film dye-clouds (RGB)");
-        println!("  --exposure <float>           Exposure multiplier (default: 1.0)");
-        println!(
-            "  --grain-size <pixels>        Crystal grain diameter in pixels (default: 2.4 for 35mm Tri-X)"
-        );
-        println!("  --grain-strength <float>     Grain contrast/intensity (default: 1.0)");
-        println!("  --scale <float>              Global grain scale multiplier (default: 1.0)");
-        println!(
-            "  --auto-scale                 Auto-scale grain size & strength relative to 24MP 35mm scan"
-        );
-        println!(
-            "  --reference-res <pixels>     Reference scan resolution long edge for auto-scale (default: 6000)"
-        );
-        println!(
-            "  --supersample <1-4>          Optical aperture supersampling factor (default: 1)"
-        );
-        println!("  --tile-size <pixels>         Processing tile dimension (default: 320)");
-        println!("  --width <pixels>             Target output width (default: match input)");
-        println!("  --height <pixels>            Target output height (default: match input)");
-        println!(
-            "  --gpu                        Accelerate optical scanning with GPU compute shaders (wgpu)"
-        );
-        return;
+/// Checks if a file path has an image file extension supported by fgrain.
+pub fn is_image_file(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".webp")
+}
+
+/// Prints top-level CLI help.
+pub fn print_main_help() {
+    println!("fgrain: Physically based film grain simulation engine");
+    println!();
+    println!("Usage:");
+    println!("  fgrain <command> [arguments] [options]");
+    println!("  fgrain <input_image> [output_image] [options]");
+    println!();
+    println!("Commands:");
+    println!("  apply <input> [output]    Apply physically based film grain to an image");
+    println!("  gradient [output]         Render continuous exposure ramp demonstration");
+    println!("  tri-x [output]            Render Kodak Tri-X 400 preset demonstration");
+    println!(
+        "  t-max [output]            Render Kodak T-Max 100 tabular grain preset demonstration"
+    );
+    println!("  halation [output]         Render point-source halation demonstration");
+    println!("  demo <name> [output]      Run a demonstration (gradient, tri-x, t-max, halation)");
+    println!("  help [command]            Print this message or help for a given command");
+    println!();
+    println!("Options:");
+    println!("  -h, --help                Print help information");
+    println!();
+    println!("Run 'fgrain apply --help' for image processing options.");
+}
+
+/// Prints help for the `apply` command.
+pub fn print_apply_help() {
+    println!("fgrain apply: Apply physically based film grain to an input image");
+    println!();
+    println!("Usage:");
+    println!("  fgrain apply <input_image> [output_image] [options]");
+    println!("  fgrain <input_image> [output_image] [options]");
+    println!();
+    println!("Supported formats:");
+    println!("  PNG, JPEG, WebP (.png, .jpg, .jpeg, .webp)");
+    println!();
+    println!("Arguments:");
+    println!("  <input_image>                 Path to input image file");
+    println!(
+        "  [output_image]                Path to output image file (default: film_grained_output.png)"
+    );
+    println!();
+    println!("Options:");
+    println!("  -o, --output <path>           Output image path");
+    println!(
+        "  -p, --preset <stock>          Emulsion stock: tri-x, tri-x-1600, caffenol, t-max, hp5 (default: tri-x)"
+    );
+    println!("  -f, --format <format>         Negative format: 35mm, 120, 4x5 (default: 35mm)");
+    println!(
+        "      --push <stops>            Push processing stops: 0.0 to 3.0 (default: 0.0, or 2.0 for tri-x-1600/caffenol)"
+    );
+    println!(
+        "      --eberhard <float>        Eberhard / Mackie line acutance halo strength (default: 0.0)"
+    );
+    println!(
+        "      --no-scanner-otf          Disable optical scanner lens MTF aperture simulation"
+    );
+    println!("  -c, --color                   Simulate color film dye-clouds (RGB)");
+    println!("  -e, --exposure <float>        Exposure multiplier (default: 1.0)");
+    println!(
+        "  -s, --grain-size <pixels>     Crystal grain diameter in pixels (default: 2.4 for 35mm Tri-X)"
+    );
+    println!("      --grain-strength <float>  Grain contrast/intensity multiplier (default: 1.0)");
+    println!("      --scale <float>           Global grain scale multiplier (default: 1.0)");
+    println!(
+        "      --auto-scale              Auto-scale grain size & strength relative to 24MP 35mm scan"
+    );
+    println!(
+        "      --reference-res <pixels>  Reference scan resolution long edge for auto-scale (default: 6000)"
+    );
+    println!("      --supersample <1-4>       Optical aperture supersampling factor (default: 1)");
+    println!("      --tile-size <pixels>      Processing tile dimension (default: 320)");
+    println!("  -w, --width <pixels>          Target output width (default: match input)");
+    println!("      --height <pixels>         Target output height (default: match input)");
+    println!(
+        "      --gpu                     Accelerate optical scanning with GPU compute shaders (wgpu)"
+    );
+    println!("  -h, --help                    Print help information");
+}
+
+/// Prints help for demo commands.
+pub fn print_demo_help() {
+    println!("fgrain demo: Run physical film grain simulation demonstrations");
+    println!();
+    println!("Usage:");
+    println!("  fgrain demo <gradient|tri-x|t-max|halation> [output_image] [options]");
+    println!("  fgrain <gradient|tri-x|t-max|halation> [output_image] [options]");
+    println!();
+    println!("Demonstrations:");
+    println!("  gradient    Continuous exposure ramp from shadow to highlight");
+    println!("  tri-x       Kodak Tri-X 400 cubic grain emulsion demo");
+    println!("  t-max       Kodak T-Max 100 tabular grain emulsion demo");
+    println!("  halation    Sub-surface scattering and anti-halation reflection demo");
+    println!();
+    println!("Options:");
+    println!("  -o, --output <path>  Output image path");
+    println!("  -h, --help           Print help information");
+}
+
+/// Prints help for the `gradient` demo.
+pub fn print_gradient_help() {
+    println!("fgrain gradient: Render continuous exposure ramp demonstration");
+    println!();
+    println!("Usage:");
+    println!("  fgrain gradient [output_image] [options]");
+    println!();
+    println!("Arguments:");
+    println!("  [output_image]       Output filename (default: film_grain_gradient.png)");
+    println!();
+    println!("Options:");
+    println!("  -o, --output <path>  Output image path");
+    println!("  -h, --help           Print help information");
+}
+
+/// Prints help for the `tri-x` demo.
+pub fn print_tri_x_help() {
+    println!("fgrain tri-x: Render Kodak Tri-X 400 preset demonstration");
+    println!();
+    println!("Usage:");
+    println!("  fgrain tri-x [output_image] [options]");
+    println!();
+    println!("Arguments:");
+    println!("  [output_image]       Output filename (default: film_grain_tri-x.png)");
+    println!();
+    println!("Options:");
+    println!("  -o, --output <path>  Output image path");
+    println!("  -h, --help           Print help information");
+}
+
+/// Prints help for the `t-max` demo.
+pub fn print_t_max_help() {
+    println!("fgrain t-max: Render Kodak T-Max 100 tabular grain preset demonstration");
+    println!();
+    println!("Usage:");
+    println!("  fgrain t-max [output_image] [options]");
+    println!();
+    println!("Arguments:");
+    println!("  [output_image]       Output filename (default: film_grain_t-max.png)");
+    println!();
+    println!("Options:");
+    println!("  -o, --output <path>  Output image path");
+    println!("  -h, --help           Print help information");
+}
+
+/// Prints help for the `halation` demo.
+pub fn print_halation_help() {
+    println!("fgrain halation: Render point-source halation demonstration");
+    println!();
+    println!("Usage:");
+    println!("  fgrain halation [output_image] [options]");
+    println!();
+    println!("Arguments:");
+    println!("  [output_image]       Output filename (default: film_grain_halation.png)");
+    println!();
+    println!("Options:");
+    println!("  -o, --output <path>  Output image path");
+    println!("  -h, --help           Print help information");
+}
+
+/// Applies the physically based film grain simulation to an arbitrary input image file.
+fn run_image_apply(args: &[String]) -> Result<(), String> {
+    if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
+        print_apply_help();
+        if args.is_empty() {
+            return Err("missing required argument <input_image>\n\nFor more information, try 'fgrain apply --help'.".to_string());
+        }
+        return Ok(());
     }
 
-    let input_path = &args[0];
-    let mut output_path = if args.len() > 1 && !args[1].starts_with('-') {
-        args[1].clone()
-    } else {
-        "film_grained_output.png".to_string()
-    };
-
+    let mut input_path: Option<String> = None;
+    let mut output_path: Option<String> = None;
     let mut preset = "tri-x".to_string();
     let mut format_arg: Option<String> = None;
     let mut color = false;
@@ -110,108 +282,201 @@ fn run_image_apply(args: &[String]) {
     let mut eberhard_arg: Option<f64> = None;
     let mut scanner_otf = true;
 
-    let mut i = 1;
+    let mut i = 0;
     while i < args.len() {
-        match args[i].as_str() {
-            "-o" | "--output" if i + 1 < args.len() => {
-                output_path = args[i + 1].clone();
-                i += 2;
-            }
-            "--preset" if i + 1 < args.len() => {
-                preset = args[i + 1].clone();
-                i += 2;
-            }
-            "--format" if i + 1 < args.len() => {
-                format_arg = Some(args[i + 1].clone());
-                i += 2;
-            }
-            "--push" if i + 1 < args.len() => {
-                if let Ok(v) = args[i + 1].parse::<f64>() {
-                    push_arg = Some(v.max(0.0));
+        let arg = &args[i];
+        match arg.as_str() {
+            "-o" | "--output" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{arg}' requires an argument"));
                 }
-                i += 2;
+                output_path = Some(args[i].clone());
             }
-            "--eberhard" if i + 1 < args.len() => {
-                if let Ok(v) = args[i + 1].parse::<f64>() {
-                    eberhard_arg = Some(v.max(0.0));
+            "-p" | "--preset" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{arg}' requires an argument"));
                 }
-                i += 2;
+                preset = args[i].clone();
+            }
+            "-f" | "--format" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{arg}' requires an argument"));
+                }
+                format_arg = Some(args[i].clone());
+            }
+            "--push" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{arg}' requires an argument"));
+                }
+                let val: f64 = args[i].parse().map_err(|_| {
+                    format!(
+                        "invalid value '{}' for '--push': expected a positive number",
+                        args[i]
+                    )
+                })?;
+                push_arg = Some(val.max(0.0));
+            }
+            "--eberhard" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{arg}' requires an argument"));
+                }
+                let val: f64 = args[i].parse().map_err(|_| {
+                    format!(
+                        "invalid value '{}' for '--eberhard': expected a number",
+                        args[i]
+                    )
+                })?;
+                eberhard_arg = Some(val.max(0.0));
             }
             "--no-scanner-otf" => {
                 scanner_otf = false;
-                i += 1;
             }
-            "--color" => {
+            "-c" | "--color" => {
                 color = true;
-                i += 1;
             }
             "--gpu" => {
                 gpu = true;
+            }
+            "-e" | "--exposure" => {
                 i += 1;
-            }
-            "--exposure" if i + 1 < args.len() => {
-                if let Ok(v) = args[i + 1].parse::<f64>() {
-                    exposure_mult = v;
+                if i >= args.len() {
+                    return Err(format!("option '{arg}' requires an argument"));
                 }
-                i += 2;
+                let val: f64 = args[i].parse().map_err(|_| {
+                    format!("invalid value '{}' for '{arg}': expected a number", args[i])
+                })?;
+                exposure_mult = val;
             }
-            "--grain-size" if i + 1 < args.len() => {
-                if let Ok(v) = args[i + 1].parse::<f64>() {
-                    grain_size_arg = Some(v);
+            "-s" | "--grain-size" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{arg}' requires an argument"));
                 }
-                i += 2;
+                let val: f64 = args[i].parse().map_err(|_| {
+                    format!("invalid value '{}' for '{arg}': expected a number", args[i])
+                })?;
+                grain_size_arg = Some(val);
             }
-            "--grain-strength" if i + 1 < args.len() => {
-                if let Ok(v) = args[i + 1].parse::<f64>() {
-                    grain_strength_arg = Some(v);
+            "--grain-strength" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{arg}' requires an argument"));
                 }
-                i += 2;
+                let val: f64 = args[i].parse().map_err(|_| {
+                    format!("invalid value '{}' for '{arg}': expected a number", args[i])
+                })?;
+                grain_strength_arg = Some(val);
             }
-            "--scale" if i + 1 < args.len() => {
-                if let Ok(v) = args[i + 1].parse::<f64>() {
-                    scale = v;
+            "--scale" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{arg}' requires an argument"));
                 }
-                i += 2;
+                let val: f64 = args[i].parse().map_err(|_| {
+                    format!("invalid value '{}' for '{arg}': expected a number", args[i])
+                })?;
+                scale = val;
             }
             "--auto-scale" => {
                 auto_scale = true;
+            }
+            "--reference-res" => {
                 i += 1;
-            }
-            "--reference-res" if i + 1 < args.len() => {
-                if let Ok(v) = args[i + 1].parse::<u32>() {
-                    reference_res = v;
+                if i >= args.len() {
+                    return Err(format!("option '{arg}' requires an argument"));
                 }
-                i += 2;
+                let val: u32 = args[i].parse().map_err(|_| {
+                    format!(
+                        "invalid value '{}' for '{arg}': expected an integer",
+                        args[i]
+                    )
+                })?;
+                reference_res = val;
             }
-            "--supersample" if i + 1 < args.len() => {
-                if let Ok(v) = args[i + 1].parse::<u32>() {
-                    supersample = v.clamp(1, 4);
-                }
-                i += 2;
-            }
-            "--tile-size" if i + 1 < args.len() => {
-                if let Ok(v) = args[i + 1].parse::<u32>() {
-                    tile_size = v;
-                }
-                i += 2;
-            }
-            "--width" if i + 1 < args.len() => {
-                if let Ok(v) = args[i + 1].parse::<u32>() {
-                    custom_width = Some(v);
-                }
-                i += 2;
-            }
-            "--height" if i + 1 < args.len() => {
-                if let Ok(v) = args[i + 1].parse::<u32>() {
-                    custom_height = Some(v);
-                }
-                i += 2;
-            }
-            _ => {
+            "--supersample" => {
                 i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{arg}' requires an argument"));
+                }
+                let val: u32 = args[i].parse().map_err(|_| {
+                    format!(
+                        "invalid value '{}' for '{arg}': expected an integer (1-4)",
+                        args[i]
+                    )
+                })?;
+                supersample = val.clamp(1, 4);
+            }
+            "--tile-size" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{arg}' requires an argument"));
+                }
+                let val: u32 = args[i].parse().map_err(|_| {
+                    format!(
+                        "invalid value '{}' for '{arg}': expected an integer",
+                        args[i]
+                    )
+                })?;
+                tile_size = val;
+            }
+            "-w" | "--width" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{arg}' requires an argument"));
+                }
+                let val: u32 = args[i].parse().map_err(|_| {
+                    format!(
+                        "invalid value '{}' for '{arg}': expected an integer",
+                        args[i]
+                    )
+                })?;
+                custom_width = Some(val);
+            }
+            "--height" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{arg}' requires an argument"));
+                }
+                let val: u32 = args[i].parse().map_err(|_| {
+                    format!(
+                        "invalid value '{}' for '{arg}': expected an integer",
+                        args[i]
+                    )
+                })?;
+                custom_height = Some(val);
+            }
+            other if other.starts_with('-') => {
+                return Err(format!(
+                    "unrecognized option '{other}'. For more information, try 'fgrain apply --help'."
+                ));
+            }
+            positional => {
+                if input_path.is_none() {
+                    input_path = Some(positional.to_string());
+                } else if output_path.is_none() {
+                    output_path = Some(positional.to_string());
+                } else {
+                    return Err(format!(
+                        "unexpected positional argument '{positional}'. For more information, try 'fgrain apply --help'."
+                    ));
+                }
             }
         }
+        i += 1;
     }
+
+    let input_path = match input_path {
+        Some(p) => p,
+        None => {
+            return Err("missing required argument <input_image>\n\nUsage: fgrain apply <input_image> [output_image] [options]\nFor more information, try 'fgrain apply --help'.".to_string());
+        }
+    };
+    let output_path = output_path.unwrap_or_else(|| "film_grained_output.png".to_string());
 
     let is_push_preset =
         preset.to_lowercase().contains("1600") || preset.to_lowercase() == "caffenol";
@@ -272,7 +537,7 @@ fn run_image_apply(args: &[String]) {
         (None, None) => None,
     };
 
-    println!("\n[Input]  {}", input_path);
+    println!("[Input]  {}", input_path);
     println!("[Output] {}", output_path);
     println!(
         "[Preset] {} ({})",
@@ -357,7 +622,7 @@ fn run_image_apply(args: &[String]) {
     };
 
     println!("\nProcessing image tiles...");
-    match process_image_file(input_path, &output_path, &options) {
+    match process_image_file(&input_path, &output_path, &options) {
         Ok(report) => {
             println!("\nRender complete:");
             println!(
@@ -378,16 +643,155 @@ fn run_image_apply(args: &[String]) {
             println!("   Silver Clumps:     {}", report.total_clumps);
             println!("   Processing Time:   {:.2}s", report.elapsed_seconds);
             println!("\nSaved output to: {}", output_path);
+            Ok(())
         }
-        Err(e) => {
-            eprintln!("\nError processing image {}: {}", input_path, e);
-        }
+        Err(e) => Err(format!("failed to process image '{input_path}': {e}")),
     }
+}
+
+/// Runs demo command dispatch.
+fn run_demo_cli(args: &[String]) -> Result<(), String> {
+    if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
+        print_demo_help();
+        return Ok(());
+    }
+
+    let demo_name = &args[0];
+    let rest = &args[1..];
+    match demo_name.as_str() {
+        "gradient" => run_gradient_demo_cli(rest),
+        "tri-x" => run_preset_demo_cli("tri-x", rest),
+        "t-max" => run_preset_demo_cli("t-max", rest),
+        "halation" => run_halation_demo_cli(rest),
+        other => Err(format!(
+            "unknown demo '{other}'. Available demos: gradient, tri-x, t-max, halation.\nFor more information, try 'fgrain demo --help'."
+        )),
+    }
+}
+
+/// CLI runner for gradient demo.
+fn run_gradient_demo_cli(args: &[String]) -> Result<(), String> {
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        print_gradient_help();
+        return Ok(());
+    }
+
+    let mut output_path: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" | "--output" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{}' requires an argument", args[i - 1]));
+                }
+                output_path = Some(args[i].clone());
+            }
+            other if other.starts_with('-') => {
+                return Err(format!(
+                    "unrecognized option '{other}' for 'gradient'. For more information, try 'fgrain gradient --help'."
+                ));
+            }
+            positional => {
+                if output_path.is_none() {
+                    output_path = Some(positional.to_string());
+                } else {
+                    return Err(format!(
+                        "unexpected positional argument '{positional}'. For more information, try 'fgrain gradient --help'."
+                    ));
+                }
+            }
+        }
+        i += 1;
+    }
+
+    run_gradient_demo(output_path.as_deref())
+}
+
+/// CLI runner for preset demos (tri-x, t-max).
+fn run_preset_demo_cli(preset_name: &str, args: &[String]) -> Result<(), String> {
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        match preset_name {
+            "t-max" => print_t_max_help(),
+            _ => print_tri_x_help(),
+        }
+        return Ok(());
+    }
+
+    let mut output_path: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" | "--output" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{}' requires an argument", args[i - 1]));
+                }
+                output_path = Some(args[i].clone());
+            }
+            other if other.starts_with('-') => {
+                return Err(format!(
+                    "unrecognized option '{other}' for '{preset_name}'. For more information, try 'fgrain {preset_name} --help'."
+                ));
+            }
+            positional => {
+                if output_path.is_none() {
+                    output_path = Some(positional.to_string());
+                } else {
+                    return Err(format!(
+                        "unexpected positional argument '{positional}'. For more information, try 'fgrain {preset_name} --help'."
+                    ));
+                }
+            }
+        }
+        i += 1;
+    }
+
+    run_preset_demo(preset_name, output_path.as_deref())
+}
+
+/// CLI runner for halation demo.
+fn run_halation_demo_cli(args: &[String]) -> Result<(), String> {
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        print_halation_help();
+        return Ok(());
+    }
+
+    let mut output_path: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" | "--output" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!("option '{}' requires an argument", args[i - 1]));
+                }
+                output_path = Some(args[i].clone());
+            }
+            other if other.starts_with('-') => {
+                return Err(format!(
+                    "unrecognized option '{other}' for 'halation'. For more information, try 'fgrain halation --help'."
+                ));
+            }
+            positional => {
+                if output_path.is_none() {
+                    output_path = Some(positional.to_string());
+                } else {
+                    return Err(format!(
+                        "unexpected positional argument '{positional}'. For more information, try 'fgrain halation --help'."
+                    ));
+                }
+            }
+        }
+        i += 1;
+    }
+
+    run_halation_demo(output_path.as_deref())
 }
 
 /// Runs a continuous exposure gradient demonstrating the transition from
 /// granular midtones to dense clumping in highlights.
-fn run_gradient_demo() {
+fn run_gradient_demo(output_path: Option<&str>) -> Result<(), String> {
     println!("\n[Synthesizing Emulsion] Kodak Tri-X 400...");
     let patch_w_um = 60.0;
     let patch_h_um = 60.0;
@@ -416,7 +820,6 @@ fn run_gradient_demo() {
     };
 
     let exp_start = Instant::now();
-    // Smooth horizontal exposure ramp from shadow (0.02) to specular highlight (1.0)
     expose_emulsion(
         &emulsion,
         |x, _y| {
@@ -445,7 +848,7 @@ fn run_gradient_demo() {
         "      Developed: {} / {} crystals ({:.1}%)",
         report.developed_crystals,
         report.total_crystals,
-        (report.developed_crystals as f64 / report.total_crystals as f64) * 100.0
+        (report.developed_crystals as f64 / report.total_crystals.max(1) as f64) * 100.0
     );
     println!(
         "      Clumps: {} | Max clump size: {} grains | Avg clump: {:.2} grains",
@@ -475,16 +878,17 @@ fn run_gradient_demo() {
         scan_start.elapsed()
     );
 
-    let out_filename = "film_grain_gradient.png";
+    let out_filename = output_path.unwrap_or("film_grain_gradient.png");
     image
         .save(out_filename)
-        .expect("Failed to save output image");
+        .map_err(|e| format!("failed to save output image to '{out_filename}': {e}"))?;
     println!("\nRender complete. Saved output to: {}", out_filename);
     println!("Total runtime: {:.2?}", total_start.elapsed());
+    Ok(())
 }
 
 /// Runs a halation demonstration: intense central highlight with anti-halation backing reflections.
-fn run_halation_demo() {
+fn run_halation_demo(output_path: Option<&str>) -> Result<(), String> {
     println!("\n[Halation Demo] Sub-surface scattering and anti-halation reflection...");
     let patch_size = 50.0;
     let out_res = 256;
@@ -499,7 +903,6 @@ fn run_halation_demo() {
         max_bounces: 64,
     };
 
-    // Intense point highlight at center
     let center_x = patch_size * 0.5;
     let center_y = patch_size * 0.5;
     expose_emulsion(
@@ -539,15 +942,16 @@ fn run_halation_demo() {
     };
 
     let (_buffer, image) = scan_emulsion(&emulsion, &scan_config, 999);
-    let out_filename = "film_grain_halation.png";
+    let out_filename = output_path.unwrap_or("film_grain_halation.png");
     image
         .save(out_filename)
-        .expect("Failed to save halation image");
+        .map_err(|e| format!("failed to save halation image to '{out_filename}': {e}"))?;
     println!("Saved halation test output to: {}", out_filename);
+    Ok(())
 }
 
 /// Runs a preset comparison demo (e.g. tri-x vs t-max).
-fn run_preset_demo(preset_name: &str) {
+fn run_preset_demo(preset_name: &str, output_path: Option<&str>) -> Result<(), String> {
     let patch_size = 50.0;
     let out_res = 256;
 
@@ -589,9 +993,92 @@ fn run_preset_demo(preset_name: &str) {
     };
 
     let (_buffer, image) = scan_emulsion(&emulsion, &scan_config, 777);
-    let out_filename = format!("film_grain_{}.png", preset_name);
+    let default_name = format!("film_grain_{}.png", preset_name);
+    let out_filename = output_path.unwrap_or(&default_name);
     image
-        .save(&out_filename)
-        .expect("Failed to save preset image");
+        .save(out_filename)
+        .map_err(|e| format!("failed to save preset image to '{out_filename}': {e}"))?;
     println!("Saved preset output to: {}", out_filename);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_help_flags() {
+        assert!(run_cli(&["fgrain".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "-h".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "--help".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "help".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "help".into(), "apply".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "help".into(), "gradient".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "help".into(), "tri-x".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "help".into(), "t-max".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "help".into(), "halation".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "help".into(), "demo".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "apply".into(), "-h".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "apply".into(), "--help".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "gradient".into(), "-h".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "tri-x".into(), "-h".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "t-max".into(), "-h".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "halation".into(), "-h".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "demo".into(), "-h".into()]).is_ok());
+        assert!(run_cli(&["fgrain".into(), "test.png".into(), "-h".into()]).is_ok());
+    }
+
+    #[test]
+    fn test_invalid_commands_and_options() {
+        let err = run_cli(&["fgrain".into(), "unknown_command".into()]).unwrap_err();
+        assert!(err.contains("unrecognized command 'unknown_command'"));
+
+        let err = run_cli(&["fgrain".into(), "--unknown_opt".into()]).unwrap_err();
+        assert!(err.contains("unrecognized option '--unknown_opt'"));
+
+        let err = run_cli(&["fgrain".into(), "help".into(), "unknown_topic".into()]).unwrap_err();
+        assert!(err.contains("unknown help topic 'unknown_topic'"));
+
+        let err = run_cli(&["fgrain".into(), "apply".into()]).unwrap_err();
+        assert!(err.contains("missing required argument"));
+
+        let err = run_cli(&[
+            "fgrain".into(),
+            "apply".into(),
+            "test.png".into(),
+            "--unknown_flag".into(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("unrecognized option '--unknown_flag'"));
+
+        let err = run_cli(&[
+            "fgrain".into(),
+            "apply".into(),
+            "test.png".into(),
+            "--preset".into(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("option '--preset' requires an argument"));
+
+        let err = run_cli(&[
+            "fgrain".into(),
+            "apply".into(),
+            "test.png".into(),
+            "--push".into(),
+            "not_a_number".into(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("invalid value 'not_a_number' for '--push'"));
+    }
+
+    #[test]
+    fn test_is_image_file() {
+        assert!(is_image_file("photo.PNG"));
+        assert!(is_image_file("scan.jpg"));
+        assert!(is_image_file("sample.jpeg"));
+        assert!(is_image_file("input.webp"));
+        assert!(!is_image_file("gradient"));
+        assert!(!is_image_file("apply"));
+        assert!(!is_image_file("tri-x"));
+    }
 }
