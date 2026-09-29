@@ -1,0 +1,25 @@
+[package]
+name = "fgrain"
+version = "0.1.0"
+edition = "2024"
+description = "Physically based 3D film grain simulation engine"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+nalgebra = { version = "0.33", features = ["rand"] }
+rayon = "1.10"
+rand = "0.8"
+rand_distr = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+wgpu = "30.0.1"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+pollster = "1.0.1"
+thiserror = "2.0.21"
+
+[lib]
+name = "fgrain"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fgrain"
+path = "src/main.rs"

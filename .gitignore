@@ -1,0 +1,19 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Research papers & large PDF references
+papers/
+
+# Test assets (contents ignored, documentation tracked)
+test_assets/*
+!test_assets/README.md
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local uncommitted AI gitignore file
+.gitignore.ai
