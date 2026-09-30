@@ -1,6 +1,6 @@
 [package]
 name = "fgrain"
-version = "0.1.0"
+version = "0.2.0-beta"
 edition = "2024"
 description = "Physically based 3D film grain simulation engine"
 license = "MIT OR Apache-2.0"
