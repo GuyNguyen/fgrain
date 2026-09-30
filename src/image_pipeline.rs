@@ -134,11 +134,29 @@ fn apply_camera_and_gelatin_optics(src: &GrayImage) -> Vec<f32> {
     let (w, h) = src.dimensions();
     let num_pixels = (w * h) as usize;
 
-    // Decode sRGB to linear scene exposure H_raw in [0, 1]
+    // Detect camera gate / letterbox borders (rows/cols that are entirely 0)
+    let mut top_margin = 0u32;
+    while top_margin < h && (0..w).all(|x| src.get_pixel(x, top_margin).0[0] == 0) {
+        top_margin += 1;
+    }
+    let mut bottom_margin = h;
+    while bottom_margin > top_margin && (0..w).all(|x| src.get_pixel(x, bottom_margin - 1).0[0] == 0) {
+        bottom_margin -= 1;
+    }
+    let mut left_margin = 0u32;
+    while left_margin < w && (top_margin..bottom_margin).all(|y| src.get_pixel(left_margin, y).0[0] == 0) {
+        left_margin += 1;
+    }
+    let mut right_margin = w;
+    while right_margin > left_margin && (top_margin..bottom_margin).all(|y| src.get_pixel(right_margin - 1, y).0[0] == 0) {
+        right_margin -= 1;
+    }
+
+    // Decode sRGB to linear scene exposure H_raw in [0, 1] within the active camera gate
     let mut h_linear = vec![0.0f32; num_pixels];
-    for y in 0..h {
+    for y in top_margin..bottom_margin {
         let row = (y * w) as usize;
-        for x in 0..w {
+        for x in left_margin..right_margin {
             let v = src.get_pixel(x, y).0[0] as f32 / 255.0;
             h_linear[row + x as usize] = v;
         }
@@ -153,77 +171,81 @@ fn apply_camera_and_gelatin_optics(src: &GrayImage) -> Vec<f32> {
     let mut temp_n = vec![0.0f32; num_pixels];
     let mut out_n = vec![0.0f32; num_pixels];
 
-    // Narrow pass horizontal
-    for y in 0..h {
+    // Narrow pass horizontal (restricted to active camera aperture gate)
+    for y in top_margin..bottom_margin {
         let row = (y * w) as usize;
-        for x in 0..w {
+        for x in left_margin..right_margin {
             let mut sum = 0.0f32;
             let mut w_sum = 0.0f32;
             for (k_idx, &kw) in weights_narrow.iter().enumerate() {
                 let tap = (x as i32) + (k_idx as i32) - rad_n;
-                if tap >= 0 && tap < (w as i32) {
+                if tap >= (left_margin as i32) && tap < (right_margin as i32) {
                     sum += h_linear[row + tap as usize] * kw;
                     w_sum += kw;
                 }
             }
-            temp_n[row + x as usize] = sum / w_sum;
+            temp_n[row + x as usize] = sum / w_sum.max(1e-6);
         }
     }
     // Narrow pass vertical
-    for y in 0..h {
-        for x in 0..w {
+    for y in top_margin..bottom_margin {
+        for x in left_margin..right_margin {
             let mut sum = 0.0f32;
             let mut w_sum = 0.0f32;
             for (k_idx, &kw) in weights_narrow.iter().enumerate() {
                 let tap = (y as i32) + (k_idx as i32) - rad_n;
-                if tap >= 0 && tap < (h as i32) {
+                if tap >= (top_margin as i32) && tap < (bottom_margin as i32) {
                     sum += temp_n[(tap as u32 * w + x) as usize] * kw;
                     w_sum += kw;
                 }
             }
-            out_n[(y * w + x) as usize] = sum / w_sum;
+            out_n[(y * w + x) as usize] = sum / w_sum.max(1e-6);
         }
     }
 
     let mut temp_w = vec![0.0f32; num_pixels];
     let mut out_w_buf = vec![0.0f32; num_pixels];
 
-    // Wide pass horizontal
-    for y in 0..h {
+    // Wide pass horizontal (restricted to active camera aperture gate)
+    for y in top_margin..bottom_margin {
         let row = (y * w) as usize;
-        for x in 0..w {
+        for x in left_margin..right_margin {
             let mut sum = 0.0f32;
             let mut w_sum = 0.0f32;
             for (k_idx, &kw) in weights_wide.iter().enumerate() {
                 let tap = (x as i32) + (k_idx as i32) - rad_w;
-                if tap >= 0 && tap < (w as i32) {
+                if tap >= (left_margin as i32) && tap < (right_margin as i32) {
                     sum += h_linear[row + tap as usize] * kw;
                     w_sum += kw;
                 }
             }
-            temp_w[row + x as usize] = sum / w_sum;
+            temp_w[row + x as usize] = sum / w_sum.max(1e-6);
         }
     }
     // Wide pass vertical
-    for y in 0..h {
-        for x in 0..w {
+    for y in top_margin..bottom_margin {
+        for x in left_margin..right_margin {
             let mut sum = 0.0f32;
             let mut w_sum = 0.0f32;
             for (k_idx, &kw) in weights_wide.iter().enumerate() {
                 let tap = (y as i32) + (k_idx as i32) - rad_w;
-                if tap >= 0 && tap < (h as i32) {
+                if tap >= (top_margin as i32) && tap < (bottom_margin as i32) {
                     sum += temp_w[(tap as u32 * w + x) as usize] * kw;
                     w_sum += kw;
                 }
             }
-            out_w_buf[(y * w + x) as usize] = sum / w_sum;
+            out_w_buf[(y * w + x) as usize] = sum / w_sum.max(1e-6);
         }
     }
 
     // Composite: 90% gelatin forward scatter + 10% halation backing bounce
     let mut h_effective = vec![0.0f32; num_pixels];
-    for i in 0..num_pixels {
-        h_effective[i] = 0.90 * out_n[i] + 0.10 * out_w_buf[i];
+    for y in top_margin..bottom_margin {
+        let row = (y * w) as usize;
+        for x in left_margin..right_margin {
+            let idx = row + x as usize;
+            h_effective[idx] = 0.90 * out_n[idx] + 0.10 * out_w_buf[idx];
+        }
     }
 
     h_effective
@@ -711,14 +733,20 @@ pub fn render_film_black_and_white_tiled(
             let base_val = src_img.get_pixel(x, y).0[0] as f32 / 255.0;
 
             // Sensitometric grain visibility curve:
-            // Shadow toe gate with D_min base floor (simulating base fog and flare)
-            let dmin_floor = if effective_push > 0.5 {
-                0.06f32
+            // Mathematically chained to input exposure field:
+            // If base_val <= toe_min (pure black letterbox borders or zero-exposure shadows),
+            // activation probability is STRICTLY 0.0, keeping borders and shadows pristine clean.
+            let toe_min = 0.005f32; // strictly 0 for pure black letterboxes and zero exposure silhouettes
+            let toe_max = 0.14f32;  // Zone III shadow transition
+            let shadow_gate = if base_val <= toe_min {
+                0.0f32
+            } else if base_val >= toe_max {
+                1.0f32
             } else {
-                0.04f32
+                let t = (base_val - toe_min) / (toe_max - toe_min);
+                t * t * (3.0 - 2.0 * t) // smoothstep
             };
-            let shadow_gate =
-                dmin_floor + (1.0 - dmin_floor) * ((base_val - 0.02) / 0.12).clamp(0.0, 1.0);
+
             // Midtone peak around Zone IV-VI
             let midtone_curve = (std::f32::consts::PI * base_val.clamp(0.0, 1.0).powf(0.70))
                 .sin()
@@ -797,7 +825,23 @@ pub fn render_film_black_and_white_tiled(
     for y in 0..out_h {
         for x in 0..out_w {
             let idx = (y * out_w + x) as usize;
-            let final_val = (tone_buf[idx] + halo_buf[idx] + scanned_grain[idx]).clamp(0.0, 1.0);
+            let base_val = src_img.get_pixel(x, y).0[0] as f32 / 255.0;
+
+            // Strict zero-exposure gate: prevents any OTF blur leakage into zero-exposure zones
+            let shadow_gate = if base_val <= 0.005 {
+                0.0f32
+            } else if base_val >= 0.14 {
+                1.0f32
+            } else {
+                let t = (base_val - 0.005) / (0.14 - 0.005);
+                t * t * (3.0 - 2.0 * t)
+            };
+
+            // Densitometric shadow attenuation: in physical prints, dark tones have saturated paper D_max
+            // where negative grain cannot add light (preventing bright static on silhouettes).
+            let gated_grain = scanned_grain[idx] * shadow_gate;
+
+            let final_val = (tone_buf[idx] + halo_buf[idx] + gated_grain).clamp(0.0, 1.0);
             output_img.put_pixel(x, y, Luma([(final_val * 255.0).round() as u8]));
         }
     }
@@ -1141,5 +1185,52 @@ mod tests {
 
         let _ = std::fs::remove_file(input_webp);
         let _ = std::fs::remove_file(output_webp);
+    }
+
+    #[test]
+    fn test_letterbox_and_shadow_zero_variance() {
+        let mut test_img = GrayImage::new(64, 64);
+        for y in 0..64 {
+            for x in 0..64 {
+                if y < 8 || y >= 56 {
+                    test_img.put_pixel(x, y, Luma([0]));
+                } else if x >= 24 && x < 40 && y >= 24 && y < 40 {
+                    test_img.put_pixel(x, y, Luma([0]));
+                } else {
+                    test_img.put_pixel(x, y, Luma([200]));
+                }
+            }
+        }
+
+        for &size in &[2.4, 10.0, 20.0] {
+            let options = FilmRenderOptions {
+                tile_size: 64,
+                grain_size_px: size,
+                scanner_otf: true,
+                ..FilmRenderOptions::default()
+            };
+
+            let (_report, rendered) =
+                render_film_black_and_white_tiled(&DynamicImage::ImageLuma8(test_img.clone()), &options);
+
+            for y in 0..8 {
+                for x in 0..64 {
+                    let pixel_val = rendered.get_pixel(x, y).0[0];
+                    assert_eq!(pixel_val, 0, "Top letterbox at ({x}, {y}) must be strictly 0");
+                }
+            }
+            for y in 56..64 {
+                for x in 0..64 {
+                    let pixel_val = rendered.get_pixel(x, y).0[0];
+                    assert_eq!(pixel_val, 0, "Bottom letterbox at ({x}, {y}) must be strictly 0");
+                }
+            }
+            for y in 26..38 {
+                for x in 26..38 {
+                    let pixel_val = rendered.get_pixel(x, y).0[0];
+                    assert_eq!(pixel_val, 0, "Silhouette core at ({x}, {y}) must be strictly 0");
+                }
+            }
+        }
     }
 }

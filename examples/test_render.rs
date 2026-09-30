@@ -111,8 +111,18 @@ fn main() {
             // In highlights/midtones, silver grains create subtle absorption dips and organic clumps
             let grain_fluctuation = (t - 0.5) * grain_strength;
 
-            // Modulate: grain is most visible in midtones, subtle in deep shadows, clumpy in highlights
-            let midtone_weight = (1.0 - (2.0 * film_tone - 1.0).powi(2)).max(0.15);
+            // Strictly chain grain visibility to exposure: zero exposure = strictly zero grain variance
+            let shadow_gate = if film_tone <= 0.005 {
+                0.0
+            } else if film_tone >= 0.14 {
+                1.0
+            } else {
+                let s = (film_tone - 0.005) / (0.14 - 0.005);
+                s * s * (3.0 - 2.0 * s)
+            };
+
+            // Modulate: grain peaks in midtones, rolls off in highlights, and is strictly zero in zero-exposure shadows
+            let midtone_weight = (1.0 - (2.0 * film_tone - 1.0).powi(2)).max(0.0) * shadow_gate;
             let final_val = (film_tone + grain_fluctuation * midtone_weight).clamp(0.0, 1.0);
 
             let byte_val = (final_val * 255.0).round() as u8;

@@ -98,8 +98,18 @@ fn main() {
             // Unbiased zero-mean grain modulation
             let delta_t = (t - mean_t) * grain_strength;
 
-            // Weight grain by tone: midtones have highest visibility, shadows have subtle grain, highlights have clumping
-            let grain_weight = (1.0 - (base_val - 0.55).abs() * 1.4).max(0.2);
+            // Strictly chain grain visibility to exposure: zero exposure = strictly zero grain variance
+            let shadow_gate = if base_val <= 0.005 {
+                0.0
+            } else if base_val >= 0.14 {
+                1.0
+            } else {
+                let s = (base_val - 0.005) / (0.14 - 0.005);
+                s * s * (3.0 - 2.0 * s)
+            };
+
+            // Weight grain by tone: midtones have highest visibility, shadows strictly suppressed at zero exposure
+            let grain_weight = (1.0 - (base_val - 0.55).abs() * 1.4).max(0.0) * shadow_gate;
             let final_val = (base_val + delta_t * grain_weight).clamp(0.0, 1.0);
 
             let byte_val = (final_val * 255.0).round() as u8;
