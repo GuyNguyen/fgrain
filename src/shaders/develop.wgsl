@@ -188,15 +188,15 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
 
         if (touching_count > 0u) {
-            // Catalytic dendritic expansion: grains touching active neighbors grow extensive filament meshes,
-            // forming ragged 5-to-15 grain macrograins
-            let clump_boost = 1.12 + 0.08 * f32(min(touching_count, 8u));
+            // Catalytic dendritic expansion: grains touching active neighbors grow filament meshes,
+            // forming ragged, discrete interlocking metallic micro-clusters.
+            // In dense highlights (high touching_count), filaments expand into a solid opaque sheet,
+            // naturally fusing optical transmittance into uniform D_max.
+            let clump_boost = 1.15 + 0.12 * f32(min(touching_count, 12u));
             cell.dims_exp.w = cell.dims_exp.w * clump_boost;
 
-            // Barycentric coalescence towards clump center (creates organic "wormy" silver clusters)
-            let avg_center = clump_center / f32(touching_count + 1u);
-            cell.pos = vec4<f32>(mix(curr_pos, avg_center, 0.35), 0.0);
-
+            // Crystals remain locked in their physical cross-linked gelatin coordinates,
+            // preserving discrete, sharp-edged angular facets rather than synthetic "wormy" blobs.
             cells[cell_idx] = cell;
         }
     }

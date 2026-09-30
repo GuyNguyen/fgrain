@@ -731,12 +731,7 @@ pub fn render_film_black_and_white_tiled(
     let mut halo_buf = vec![0.0f32; num_pixels];
 
     for y in 0..out_h {
-        let y_prev = y.saturating_sub(1);
-        let y_next = (y + 1).min(out_h - 1);
         for x in 0..out_w {
-            let x_prev = x.saturating_sub(1);
-            let x_next = (x + 1).min(out_w - 1);
-
             let idx = (y * out_w + x) as usize;
             let w_val = weight_accum[idx].max(1e-5);
             let w_sq_norm = (weight_sq_accum[idx] / (w_val * w_val)).max(0.05);
@@ -745,12 +740,21 @@ pub fn render_film_black_and_white_tiled(
 
             let d_high = d_norm[idx] - d_low[idx];
 
-            let base_val = src_img.get_pixel(x, y).0[0] as f32 / 255.0;
+            let raw_val = src_img.get_pixel(x, y).0[0] as f32 / 255.0;
+
+            // Optical Turbidity (Gelatin Point Spread Function):
+            // Blend microscopic forward scattering in gelatin into the underlying scene exposure,
+            // softening rigid digital pixel steps and allowing metallic silver grains to organically
+            // define high-contrast boundaries (e.g. tree branches against bright sky).
+            // Letterbox borders and zero-exposure silhouettes (raw_val <= 0.005) remain strictly 0.0.
+            let base_val = if raw_val <= 0.005 {
+                0.0f32
+            } else {
+                0.35 * raw_val + 0.65 * h_effective[idx]
+            };
 
             // Sensitometric grain visibility curve:
-            // Mathematically chained to input exposure field:
-            // If base_val <= toe_min (pure black letterbox borders or zero-exposure shadows),
-            // activation probability is STRICTLY 0.0, keeping borders and shadows pristine clean.
+            // 1. Strictly chained to input exposure: zero exposure (base_val <= toe_min) yields strictly 0.0 variance.
             let toe_min = 0.005f32; // strictly 0 for pure black letterboxes and zero exposure silhouettes
             let toe_max = 0.14f32;  // Zone III shadow transition
             let shadow_gate = if base_val <= toe_min {
@@ -762,24 +766,25 @@ pub fn render_film_black_and_white_tiled(
                 t * t * (3.0 - 2.0 * t) // smoothstep
             };
 
-            // Midtone peak around Zone IV-VI
-            let midtone_curve = (std::f32::consts::PI * base_val.clamp(0.0, 1.0).powf(0.70))
+            // 2. Highlight Merging Deficit (Upper Zone Shoulder Fusion):
+            // In physical emulsion, dense populations of exposed crystals coalesce into a solid
+            // opaque silver sheet, naturally fusing individual grains and burning out grain variance
+            // in the brightest areas (Zone VII to X, e.g. bright fog in the center, light sources, clouds).
+            let highlight_gate = if base_val <= 0.65 {
+                1.0f32
+            } else if base_val >= 0.94 {
+                0.0f32
+            } else {
+                let u = (base_val - 0.65) / (0.94 - 0.65);
+                1.0 - u * u * (3.0 - 2.0 * u) // smoothstep descent to 0
+            };
+
+            // 3. Midtone peak around Zone IV-VI
+            let midtone_curve = (std::f32::consts::PI * base_val.clamp(0.0, 1.0).powf(0.72))
                 .sin()
                 .max(0.0);
-            // Highlight shoulder roll-off as silver saturates
-            let highlight_roll = (1.0 - 0.75 * base_val).max(0.12);
 
-            let vis = shadow_gate * (0.25 * highlight_roll + 0.75 * midtone_curve);
-
-            // Edge acutance: calculate local gradient to prevent noisy grain explosion across high-contrast edges
-            let val_xp = src_img.get_pixel(x_next, y).0[0] as f32 / 255.0;
-            let val_xm = src_img.get_pixel(x_prev, y).0[0] as f32 / 255.0;
-            let val_yp = src_img.get_pixel(x, y_next).0[0] as f32 / 255.0;
-            let val_ym = src_img.get_pixel(x, y_prev).0[0] as f32 / 255.0;
-            let gx = val_xp - val_xm;
-            let gy = val_yp - val_ym;
-            let edge_mag = (gx * gx + gy * gy).sqrt();
-            let edge_factor = 1.0 / (1.0 + 1.2 * edge_mag);
+            let vis = shadow_gate * highlight_gate * midtone_curve;
 
             let eberhard_halo = 0.0f32;
 
@@ -795,19 +800,32 @@ pub fn render_film_black_and_white_tiled(
                 base_val
             };
 
-            grain_buf[idx] = (d_high - high_mean) * norm_factor * grain_scale * vis * edge_factor;
+            // Discrete metallic micro-acutance:
+            // Real silver halides are discrete, sharp-edged metallic clusters with high optical contrast
+            // relative to the transparent gelatin, rather than smooth continuous Perlin noise.
+            // Steepening the micro-contrast transforms soft sinusoidal transitions into discrete,
+            // angular metallic micro-dots.
+            let delta_d = d_high - high_mean;
+            let delta_sharp = if delta_d.abs() > 1e-6 {
+                delta_d.signum() * delta_d.abs().powf(0.85)
+            } else {
+                0.0
+            };
+
+            // Grain directly defines edges (no artificial edge_factor suppression)
+            grain_buf[idx] = delta_sharp * norm_factor * grain_scale * vis;
             tone_buf[idx] = tone_val;
             halo_buf[idx] = eberhard_halo;
         }
     }
 
-    // Scanner Optical Transfer Function (OTF): 3-tap Gaussian-approximated MTF
+    // Scanner Optical Transfer Function (OTF): Gaussian-approximated MTF
     // of flatbed scanner lens and glass aperture. Convolves the physical silver grain field
-    // to eliminate digital pixel rasterization while preserving underlying optical scene sharpness.
+    // while preserving discrete metallic micro-facets and edge acutance.
     let scanned_grain = if options.scanner_otf {
         let mut temp = vec![0.0f32; num_pixels];
         let mut filtered = vec![0.0f32; num_pixels];
-        let k = [0.08f32, 0.84, 0.08];
+        let k = [0.035f32, 0.93, 0.035];
 
         // Horizontal pass
         for y in 0..out_h {
@@ -840,21 +858,32 @@ pub fn render_film_black_and_white_tiled(
     for y in 0..out_h {
         for x in 0..out_w {
             let idx = (y * out_w + x) as usize;
-            let base_val = src_img.get_pixel(x, y).0[0] as f32 / 255.0;
+            let raw_val = src_img.get_pixel(x, y).0[0] as f32 / 255.0;
 
             // Strict zero-exposure gate: prevents any OTF blur leakage into zero-exposure zones
-            let shadow_gate = if base_val <= 0.005 {
+            let shadow_gate = if raw_val <= 0.005 {
                 0.0f32
-            } else if base_val >= 0.14 {
+            } else if raw_val >= 0.14 {
                 1.0f32
             } else {
-                let t = (base_val - 0.005) / (0.14 - 0.005);
+                let t = (raw_val - 0.005) / (0.14 - 0.005);
                 t * t * (3.0 - 2.0 * t)
             };
 
-            // Densitometric shadow attenuation: in physical prints, dark tones have saturated paper D_max
-            // where negative grain cannot add light (preventing bright static on silhouettes).
-            let gated_grain = scanned_grain[idx] * shadow_gate;
+            // Strict highlight burnout gate: ensures overexposed fog/highlights stay cleanly fused
+            let highlight_gate = if raw_val <= 0.65 {
+                1.0f32
+            } else if raw_val >= 0.94 {
+                0.0f32
+            } else {
+                let u = (raw_val - 0.65) / (0.94 - 0.65);
+                1.0 - u * u * (3.0 - 2.0 * u)
+            };
+
+            // Densitometric shadow and highlight attenuation:
+            // - In physical prints, dark tones have saturated paper D_max (preventing bright static on silhouettes)
+            // - Upper highlight zones fuse into contiguous silver sheets (smoothing out fog)
+            let gated_grain = scanned_grain[idx] * shadow_gate * highlight_gate;
 
             let final_val = (tone_buf[idx] + halo_buf[idx] + gated_grain).clamp(0.0, 1.0);
             output_img.put_pixel(x, y, Luma([(final_val * 255.0).round() as u8]));
@@ -1247,5 +1276,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_highlight_fusion_burnout() {
+        // Create an image with an extreme blown-out highlight fog region (value 255)
+        // alongside a midtone region (value 128)
+        let mut test_img = GrayImage::new(64, 64);
+        for y in 0..64 {
+            for x in 0..64 {
+                if x < 32 {
+                    test_img.put_pixel(x, y, Luma([255])); // Blown out fog
+                } else {
+                    test_img.put_pixel(x, y, Luma([128])); // Midtone
+                }
+            }
+        }
+
+        let options = FilmRenderOptions {
+            tile_size: 64,
+            grain_size_px: 2.4,
+            ..FilmRenderOptions::default()
+        };
+
+        let (_report, rendered) =
+            render_film_black_and_white_tiled(&DynamicImage::ImageLuma8(test_img), &options);
+
+        // Blown out highlight region (x: 4..28, y: 4..60) should have completely fused/smooth texture
+        // without isolated dark grain specks
+        let mut min_fog = 255u8;
+        let mut max_fog = 0u8;
+        for y in 4..60 {
+            for x in 4..28 {
+                let v = rendered.get_pixel(x, y).0[0];
+                min_fog = min_fog.min(v);
+                max_fog = max_fog.max(v);
+            }
+        }
+
+        // Highlight variance should be near 0 (fused silver sheet into solid paper white)
+        assert!(
+            min_fog >= 253,
+            "Highlight fog minimum value should be >= 253 due to sheet fusion burnout, got {min_fog}"
+        );
+        assert_eq!(
+            max_fog, 255,
+            "Highlight fog maximum value should be 255"
+        );
     }
 }
