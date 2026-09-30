@@ -654,8 +654,23 @@ pub fn render_film_black_and_white_tiled(
         d_norm[i] = d_accum[i] / weight_accum[i].max(1e-5);
     }
 
-    let kernel = [0.06f32, 0.24, 0.40, 0.24, 0.06];
-    let k_rad = 2i32;
+    // Low-frequency density separation adaptively scaled to physical grain size.
+    // Dynamically scaling the Gaussian kernel radius prevents Difference-of-Gaussians
+    // band-pass ringing / "wormy" Turing pattern artifacts at large grain scales,
+    // preserving genuine sharp metallic silver halide clump morphology.
+    let filter_sigma = (grain_size_px as f32 * 1.5).max(1.5);
+    let k_rad = (2.5 * filter_sigma).ceil().clamp(2.0, 48.0) as i32;
+    let mut kernel = Vec::with_capacity((2 * k_rad + 1) as usize);
+    let mut k_sum = 0.0f32;
+    for i in -k_rad..=k_rad {
+        let w = (-0.5 * (i as f32 / filter_sigma).powi(2)).exp();
+        kernel.push(w);
+        k_sum += w;
+    }
+    for w in kernel.iter_mut() {
+        *w /= k_sum.max(1e-6);
+    }
+
     let mut temp_low = vec![0.0f32; (out_w * out_h) as usize];
     let mut d_low = vec![0.0f32; (out_w * out_h) as usize];
 
@@ -671,7 +686,7 @@ pub fn render_film_black_and_white_tiled(
                     w_sum += kw;
                 }
             }
-            temp_low[row + x as usize] = sum / w_sum;
+            temp_low[row + x as usize] = sum / w_sum.max(1e-6);
         }
     }
 
@@ -686,7 +701,7 @@ pub fn render_film_black_and_white_tiled(
                     w_sum += kw;
                 }
             }
-            d_low[(y * out_w + x) as usize] = sum / w_sum;
+            d_low[(y * out_w + x) as usize] = sum / w_sum.max(1e-6);
         }
     }
 

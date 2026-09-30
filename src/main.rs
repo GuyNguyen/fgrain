@@ -524,6 +524,12 @@ fn run_image_apply(args: &[String]) -> Result<(), String> {
                 );
                 0.05
             } else {
+                if v > 4.5 {
+                    println!(
+                        "[Notice] Grain size {:.2}px exceeds standard 35mm physical scale (~0.8-2.5px); rendering as extreme macro / sub-miniature crop",
+                        v
+                    );
+                }
                 v
             }
         }
